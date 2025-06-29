@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>WalletConnect Swap + Approval</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }
+    .box { background: #fff; padding: 20px; border-radius: 8px; max-width: 500px; margin: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    button, select, input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; }
+    .result { margin-top: 12px; font-size: 0.95em; color: #0052cc; word-break: break-word; }
+    #qrCode { text-align: center; margin: 20px 0; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>🔁 Token Swap</h2>
+    <button id="scanQR">🔗 Show QR to Connect Wallet</button>
+    <div id="qrCode">🔍 QR code appears here</div>
+    <div class="result" id="walletStatus">Not connected</div>
+    <label>From Token:</label>
+    <select id="fromToken">
+      <option value="0xdAC17F958D2ee523a2206206994597C13D831ec7">USDT</option>
+      <option value="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48">USDC</option>
+      <option value="0x6B175474E89094C44Da98b954EedeAC495271d0F">DAI</option>
+    </select>
+    <label>To Token:</label>
+    <select id="toToken">
+      <option value="0xC02aaA39b223FE8D0A0E5C4F27eAD9083C756Cc2">WETH</option>
+      <option value="0xdAC17F958D2ee523a2206206994597C13D831ec7">USDT</option>
+    </select>
+    <label>Amount:</label>
+    <input type="number" id="amount" placeholder="0.0" />
+    <button id="swapBtn" disabled>Swap</button>
+    <div class="result" id="swapResult"></div>
+  </div>
+  <script type="module">
+    import { AppKitCore } from "https://cdn.jsdelivr.net/npm/@walletconnect/appkit-core/dist/index.min.js";
+    import QRCode from "https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js";
+    import { ethers } from "https://cdn.jsdelivr.net/npm/ethers@6.10.0/dist/ethers.esm.min.js";
+    const projectId = "YOUR_PROJECT_ID";
+    const ONE_INCH_SPENDER = "0x1111111254EEB25477B68fb85Ed929f73A960582";
+    const core = new AppKitCore({
+      projectId,
+      modal: false,
+      showQr: true,
+      chains: ["eip155:1"]
+    });
+    const qrContainer = document.getElementById("qrCode");
+    const status = document.getElementById("walletStatus");
+    const swapBtn = document.getElementById("swapBtn");
+    const swapResult = document.getElementById("swapResult");
+    let signer, userAddress;
+    core.on("display_uri", uri => {
+      qrContainer.innerHTML = "";
+      QRCode.toCanvas(uri, { width: 200 }, (err, canvas) => qrContainer.appendChild(canvas));
+    });
+    core.on("connect", async session => {
+      [userAddress] = session.accounts;
+      status.textContent = "Connected: " + userAddress;
+      swapBtn.disabled = false;
+      const provider = new ethers.Web3Provider(core.provider);
+      signer = provider.getSigner();
+    });
+    document.getElementById("scanQR").onclick = () => core.connect();
+    swapBtn.onclick = async () => {
+      try {
+        swapBtn.disabled = true;
+        swapResult.textContent = "⏳ Processing…";
+        const fromToken = document.getElementById("fromToken").value;
+        const toToken = document.getElementById("toToken").value;
+        const rawAmount = document.getElementById("amount").value;
+        if (!rawAmount || fromToken === toToken) throw new Error("Invalid input");
+        const amount = await parseAmount(fromToken, rawAmount);
+        const erc20 = new ethers.Contract(fromToken, [
+          "function allowance(address,address) view returns(uint256)",
+          "function approve(address,uint256)"
+        ], signer);
+        const allowance = await erc20.allowance(userAddress, ONE_INCH_SPENDER);
+        if (allowance < amount) {
+          swapResult.textContent = "🔐 Approving token...";
+          const tx = await erc20.approve(ONE_INCH_SPENDER, amount);
+          await tx.wait();
+          swapResult.textContent = "✅ Approval complete.";
+        }
+        swapResult.textContent = "🔁 Executing swap...";
+        const receipt = await core.swap({
+          fromToken,
+          toToken,
+          amount: rawAmount,
+          slippage: 1,
+          recipientAddress: userAddress
+        });
+        swapResult.textContent = "✅ Swap complete. TxHash: " + receipt.txHash;
+      } catch (e) {
+        swapResult.textContent = "❌ " + (e?.message || e);
+      } finally {
+        swapBtn.disabled = false;
+      }
+    };
+    async function parseAmount(tokenAddress, amount) {
+      const erc20 = new ethers.Contract(tokenAddress, ["function decimals() view returns(uint8)"], signer);
+      const decimals = await erc20.decimals();
+      return ethers.parseUnits(amount, decimals);
+    }
+  </script>
+</body>
+</html>
